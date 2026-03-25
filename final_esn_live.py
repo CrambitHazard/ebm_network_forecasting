@@ -9,6 +9,7 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 file_path = os.path.join(_SCRIPT_DIR, "data", "dataset1", "live_packets.csv")
@@ -54,9 +55,15 @@ window = 50
 actual = deque(maxlen=window)
 predicted = deque(maxlen=window)
 
+BASELINE_MA_WINDOW = 5
+FIGURES_DIR = os.path.join(_SCRIPT_DIR, "figures")
+RESULTS_PLOT_PATH = os.path.join(FIGURES_DIR, "results_plot.png")
+FIG_SAVE_MIN_INTERVAL_SEC = 2.0
+
 last_len = 0
 last_energy = 0.0
 _csv_primed = False
+_last_fig_save_time = 0.0
 
 plt.ion()
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -70,8 +77,59 @@ def energy(y, state, Wout, bias, lam=ENERGY_LAM):
     return float(np.sum((y - readout) ** 2) + lam * np.sum(state**2))
 
 
+def moving_average_baseline(a):
+    a = np.asarray(a, dtype=float)
+    n = len(a)
+    b = np.zeros(n, dtype=float)
+    for i in range(n):
+        if i == 0:
+            b[i] = a[i]
+        else:
+            lo = max(0, i - BASELINE_MA_WINDOW)
+            b[i] = float(np.mean(a[lo:i]))
+    return b
+
+
+def print_metrics_and_save_figure():
+    global _last_fig_save_time
+    y_true = np.asarray(list(actual), dtype=float)
+    y_pred = np.asarray(list(predicted), dtype=float)
+    if y_true.size < 2 or y_pred.size != y_true.size:
+        return
+
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    mape_mask = np.abs(y_true) > 1e-3
+    if np.any(mape_mask):
+        mape = float(
+            mean_absolute_percentage_error(y_true[mape_mask], y_pred[mape_mask])
+        )
+    else:
+        mape = float("nan")
+
+    base = moving_average_baseline(y_true)
+    rmse_b = float(np.sqrt(mean_squared_error(y_true, base)))
+    if np.any(mape_mask):
+        mape_b = float(
+            mean_absolute_percentage_error(y_true[mape_mask], base[mape_mask])
+        )
+    else:
+        mape_b = float("nan")
+
+    print("--- metrics (current plot window) ---")
+    print("Proposed RMSE:", rmse)
+    print("Proposed MAPE:", mape)
+    print("Baseline (MA) RMSE:", rmse_b)
+    print("Baseline (MA) MAPE:", mape_b)
+
+    now = time.time()
+    if now - _last_fig_save_time >= FIG_SAVE_MIN_INTERVAL_SEC:
+        os.makedirs(FIGURES_DIR, exist_ok=True)
+        fig.savefig(RESULTS_PLOT_PATH, dpi=150, bbox_inches="tight")
+        _last_fig_save_time = now
+        print("Saved plot:", RESULTS_PLOT_PATH)
+
+
 def draw_chart():
-    """Redraw axes from deques (same colors/labels as reference figure)."""
     ax.clear()
     n = len(actual)
     x = range(n)
@@ -177,6 +235,7 @@ while True:
 
         if len(actual) > 0:
             draw_chart()
+            print_metrics_and_save_figure()
             plt.pause(0.05)
         else:
             ax.clear()
